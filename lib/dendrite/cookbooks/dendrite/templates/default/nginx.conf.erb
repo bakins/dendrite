@@ -1,0 +1,92 @@
+user <%= @nginx['user'] %> <%= @nginx['group'] %>;
+<% %w[ worker_processes error_log pid worker_rlimit_nofile worker_rlimit_core working_directory timer_resolution ].each do |k| -%>
+<%= k %> <%= @nginx[k] %>;
+<% end -%>
+
+events {
+    worker_connections <%= @nginx['worker_connections'] %>;
+}
+
+http {
+    access_log off;
+    keepalive_requests 10;
+    keepalive_timeout 5;
+    server_tokens off;
+    port_in_redirect off;
+    server_name_in_redirect off;
+
+    gzip on;
+    gzip_http_version 1.0;
+    gzip_comp_level 1;
+    gzip_proxied any;
+    gzip_vary on;
+    gzip_disable "MSIE [1-6]\.";
+    gzip_types text/plain application/xml application/json;
+
+    large_client_header_buffers 4 8k;
+
+    proxy_http_version 1.1;
+    proxy_set_header Connection "";
+    proxy_connect_timeout 5s;
+    proxy_read_timeout 10s;
+    proxy_send_timeout 10s;
+    proxy_next_upstream error timeout invalid_header;
+
+    map $arg_host $service {
+        default '';
+<% @services.keys.sort.each_with_index do |k,i| -%>
+<%   c = @services[k] -%>
+<%   c[:server_names].each do |s| -%>
+        <%= s %> upstream_<%= i %>;
+<%   end -%>
+<% end -%>
+    }
+
+    server {
+        listen 80 default_server;
+        server_name _;
+
+        location / {
+            if ($service = '') {
+                return 444;
+            }
+            proxy_pass http://$service;
+        }
+
+        location /upstream-status {
+            check_status;
+        }
+
+	location /server-status {
+            stub_status on;
+        }
+    }
+
+<% @services.keys.sort.each_with_index do |k,i| -%>
+<%   c = @services[k] -%>
+
+    ### BEGIN <%= k %>
+    upstream upstream_<%= i %> {
+        <% c['backends'].sort_by{|b| "#{b['host']}:#{b['port']}" }.each do |b| -%>
+        server <%= b['host'] %>:<%= b['port'] %>;
+        <% end -%>
+        keepalive <%= c['keepalives'] %>;
+        check interval=<%= c['interval'] * 1000 %> rise=<%= c['rise'] %> fall=<%= c['fall'] %> timeout=<%= c['timeout'] %>;
+        check_http_send "GET <%= c['uri'] %> HTTP/1.0\r\n\r\n";
+        check_http_expect_alive http_2xx;
+    }
+
+    server {
+        listen 80;
+        server_name <%= c[:server_names].join(" ") %>;
+
+        location / {
+            proxy_pass http://upstream_<%= i %>;
+        }
+    }
+    ### END <%= k %>
+
+
+<% end -%>
+
+}
